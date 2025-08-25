@@ -20,12 +20,22 @@ on:
         required: true
         default: "2025-08-24"
 
+# Add explicit permissions to avoid 403 errors
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history for git operations
+          fetch-depth: 0
+          # Use token for authentication
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -43,10 +53,56 @@ jobs:
             --domain "${{ github.event.inputs.domain }}" \
             --start_date "${{ github.event.inputs.start_date }}"
 
-      - name: Commit results
+      - name: Check for output files
+        id: check-files
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
+          if [ -d "output" ] && [ "$(ls -A output/*.csv 2>/dev/null)" ]; then
+            echo "files_exist=true" >> $GITHUB_OUTPUT
+            echo "file_count=$(ls output/*.csv | wc -l)" >> $GITHUB_OUTPUT
+          else
+            echo "files_exist=false" >> $GITHUB_OUTPUT
+            echo "file_count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit results
+        if: steps.check-files.outputs.files_exist == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Create a new branch for the results
+          git checkout -b "results/$(date +%Y%m%d-%H%M%S)"
+          
+          # Add all output files
           git add output/*.csv
-          git commit -m "update results"
-          git push
+          
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "📊 Update Pinterest scraping results - ${{ github.event.inputs.keyword }} [skip ci]"
+            
+            # Try to push to the new branch
+            if git push origin HEAD; then
+              echo "✅ Successfully pushed results to branch"
+            else
+              echo "⚠️ Failed to push to branch, but results were generated locally"
+            fi
+          fi
+
+      - name: Create summary
+        run: |
+          echo "## 📊 Pinterest Scraping Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Keyword**: ${{ github.event.inputs.keyword }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Board**: ${{ github.event.inputs.board }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Domain**: ${{ github.event.inputs.domain }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Start Date**: ${{ github.event.inputs.start_date }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Output Files**: ${{ steps.check-files.outputs.file_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check-files.outputs.files_exist }}" == "true" ]; then
+            echo "✅ **Status**: Script completed successfully!" >> $GITHUB_STEP_SUMMARY
+            echo "📁 **Files**: Check the output/ directory for CSV files" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Status**: Script ran but no output files were generated" >> $GITHUB_STEP_SUMMARY
+          fi
