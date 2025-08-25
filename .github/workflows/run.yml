@@ -19,6 +19,11 @@ on:
         description: "Start date (YYYY-MM-DD)"
         required: true
         default: "2025-08-24"
+      pages:
+        description: "Number of pages to scrape (10-50)"
+        required: false
+        default: "30"
+        type: number
 
 # Add explicit permissions to avoid 403 errors
 permissions:
@@ -51,7 +56,8 @@ jobs:
             --keyword "${{ github.event.inputs.keyword }}" \
             --board "${{ github.event.inputs.board }}" \
             --domain "${{ github.event.inputs.domain }}" \
-            --start_date "${{ github.event.inputs.start_date }}"
+            --start_date "${{ github.event.inputs.start_date }}" \
+            --pages "${{ github.event.inputs.pages || 30 }}"
 
       - name: Check for output files
         id: check-files
@@ -98,11 +104,13 @@ jobs:
           echo "- **Board**: ${{ github.event.inputs.board }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Domain**: ${{ github.event.inputs.domain }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Start Date**: ${{ github.event.inputs.start_date }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pages Scraped**: ${{ github.event.inputs.pages || 30 }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Output Files**: ${{ steps.check-files.outputs.file_count }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.check-files.outputs.files_exist }}" == "true" ]; then
             echo "✅ **Status**: Script completed successfully!" >> $GITHUB_STEP_SUMMARY
             echo "📁 **Files**: Check the output/ directory for CSV files" >> $GITHUB_STEP_SUMMARY
+            echo "🎯 **Target**: Collecting 200+ pins from multiple pages" >> $GITHUB_STEP_SUMMARY
           else
             echo "⚠️ **Status**: Script ran but no output files were generated" >> $GITHUB_STEP_SUMMARY
           fi

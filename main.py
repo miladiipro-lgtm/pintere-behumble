@@ -10,6 +10,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
 import traceback
+import time
 
 # ====== Setup logging ======
 logging.basicConfig(
@@ -41,16 +42,21 @@ def create_output_directory():
         return False
 
 def get_pinterest_pins(keyword, num_pages, headers):
-    """Scrape Pinterest pins with error handling."""
+    """Scrape Pinterest pins with enhanced logic to find more pins."""
     results = []
+    target_pins = 200  # Target number of pins to collect
     
     for page in range(1, num_pages + 1):
+        if len(results) >= target_pins:
+            logger.info(f"Reached target of {target_pins} pins, stopping early")
+            break
+            
         try:
             # URL encode the keyword properly
             encoded_keyword = quote_plus(keyword)
             url = f"https://www.pinterest.com/search/pins/?q={encoded_keyword}&page={page}"
             
-            logger.info(f"Scraping page {page} for keyword: {keyword}")
+            logger.info(f"Scraping page {page} for keyword: {keyword} (Current pins: {len(results)})")
             logger.info(f"URL: {url}")
             
             response = requests.get(url, headers=headers, timeout=30)
@@ -62,35 +68,96 @@ def get_pinterest_pins(keyword, num_pages, headers):
             
             soup = BeautifulSoup(response.text, "html.parser")
             
-            # Look for pins in multiple possible selectors
-            pins = soup.find_all("img", {"src": True})
-            logger.info(f"Found {len(pins)} img tags on page {page}")
+            # Try multiple selectors to find pins
+            pins = []
             
-            if not pins:
+            # Method 1: Look for img tags with src
+            img_pins = soup.find_all("img", {"src": True})
+            pins.extend(img_pins)
+            logger.info(f"Found {len(img_pins)} img tags on page {page}")
+            
+            # Method 2: Look for Pinterest pin containers
+            pin_containers = soup.find_all("div", {"data-test-id": "pin"})
+            pins.extend(pin_containers)
+            logger.info(f"Found {len(pin_containers)} pin containers on page {page}")
+            
+            # Method 3: Look for any div with pin-related classes
+            pin_divs = soup.find_all("div", class_=lambda x: x and "pin" in x.lower())
+            pins.extend(pin_divs)
+            logger.info(f"Found {len(pin_divs)} pin divs on page {page}")
+            
+            # Method 4: Look for links that might contain pins
+            pin_links = soup.find_all("a", href=lambda x: x and "/pin/" in x)
+            pins.extend(pin_links)
+            logger.info(f"Found {len(pin_links)} pin links on page {page}")
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_pins = []
+            for pin in pins:
+                pin_id = str(pin)
+                if pin_id not in seen:
+                    seen.add(pin_id)
+                    unique_pins.append(pin)
+            
+            logger.info(f"Total unique elements found on page {page}: {len(unique_pins)}")
+            
+            if not unique_pins:
                 logger.warning(f"No pins found on page {page}")
-                # Try alternative selectors
-                pins = soup.find_all("div", {"data-test-id": "pin"})
-                logger.info(f"Alternative search found {len(pins)} pin divs")
                 continue
                 
             page_results = []
-            for i, pin in enumerate(pins):
+            for i, pin in enumerate(unique_pins):
                 try:
-                    title = pin.get("alt", f"{keyword} idea {i}")
-                    img_src = pin.get("src", "")
+                    # Extract title from various attributes
+                    title = ""
+                    if pin.name == "img":
+                        title = pin.get("alt", "")
+                        img_src = pin.get("src", "")
+                    elif pin.name == "div":
+                        # Look for img inside div
+                        img_tag = pin.find("img")
+                        if img_tag:
+                            title = img_tag.get("alt", "")
+                            img_src = img_tag.get("src", "")
+                        else:
+                            # Try to get text content
+                            title = pin.get_text(strip=True)[:100]
+                            img_src = pin.get("data-src", "") or pin.get("data-lazy-src", "")
+                    elif pin.name == "a":
+                        # Look for img inside link
+                        img_tag = pin.find("img")
+                        if img_tag:
+                            title = img_tag.get("alt", "")
+                            img_src = img_tag.get("src", "")
+                        else:
+                            title = pin.get_text(strip=True)[:100]
+                            img_src = ""
                     
-                    # Filter out non-image URLs and validate image URLs
+                    # Clean up title
+                    if not title:
+                        title = f"{keyword} idea {len(results) + i + 1}"
+                    else:
+                        title = title.strip()
+                    
+                    # Validate image URL
                     if img_src and (img_src.startswith("http") or img_src.startswith("//")):
                         page_results.append({
-                            "title": title.strip() if title else f"{keyword} idea {i}",
+                            "title": title,
                             "img": img_src
                         })
+                        
                 except Exception as e:
                     logger.warning(f"Error processing pin {i} on page {page}: {e}")
                     continue
             
             results.extend(page_results)
             logger.info(f"Successfully scraped {len(page_results)} pins from page {page}")
+            logger.info(f"Total pins collected so far: {len(results)}")
+            
+            # Add delay between requests to be respectful
+            if page < num_pages:
+                time.sleep(1)
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Network error on page {page}: {e}")
@@ -100,6 +167,7 @@ def get_pinterest_pins(keyword, num_pages, headers):
             logger.error(f"Traceback: {traceback.format_exc()}")
             continue
     
+    logger.info(f"Final pin count: {len(results)}")
     return results
 
 def process_data(results, keyword, board, domain, start_date):
@@ -109,7 +177,7 @@ def process_data(results, keyword, board, domain, start_date):
         return None
     
     data = []
-    emojis = [emoji.emojize(":sparkles:"), emoji.emojize(":fire:"), emoji.emojize(":bulb:"), ""]
+    emojis = [emoji.emojize(":sparkles:"), emoji.emojize(":fire:"), emoji.emojize(":bulb:"), emoji.emojize(":star:"), emoji.emojize(":heart:"), ""]
     
     for i, item in enumerate(results):
         try:
@@ -161,7 +229,7 @@ def main():
         parser.add_argument("--board", required=True, help="Board name for categorization")
         parser.add_argument("--domain", required=True, help="Domain for generated links")
         parser.add_argument("--start_date", required=True, help="Start date in YYYY-MM-DD format")
-        parser.add_argument("--pages", type=int, default=3, help="Number of pages to scrape (default: 3)")
+        parser.add_argument("--pages", type=int, default=30, help="Number of pages to scrape (default: 30)")
         parser.add_argument("--rows_per_file", type=int, default=200, help="Rows per CSV file (default: 200)")
         
         args = parser.parse_args()
@@ -176,13 +244,14 @@ def main():
             logger.error("Invalid start date provided")
             sys.exit(1)
             
-        num_pages = max(1, min(args.pages, 10))  # Limit pages to 1-10
+        num_pages = max(10, min(args.pages, 50))  # Limit pages to 10-50 for better results
         rows_per_file = max(50, min(args.rows_per_file, 1000))  # Limit rows to 50-1000
         
         logger.info(f"Starting Pinterest scraper with keyword: {keyword}")
         logger.info(f"Target board: {board}, Domain: {domain}")
         logger.info(f"Start date: {start_date.strftime('%Y-%m-%d')}")
         logger.info(f"Pages to scrape: {num_pages}, Rows per file: {rows_per_file}")
+        logger.info(f"Target: Collecting 200+ pins")
         
         # Create output directory
         if not create_output_directory():
@@ -191,7 +260,13 @@ def main():
         
         # ====== Step 1: Scraping Pinterest ======
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
         }
         
         results = get_pinterest_pins(keyword, num_pages, headers)
@@ -200,9 +275,8 @@ def main():
             logger.warning("No pins were scraped. Creating sample data for testing...")
             # Create sample data to prevent complete failure
             results = [
-                {"title": f"{keyword} sample idea 1", "img": "https://via.placeholder.com/300x300"},
-                {"title": f"{keyword} sample idea 2", "img": "https://via.placeholder.com/300x300"},
-                {"title": f"{keyword} sample idea 3", "img": "https://via.placeholder.com/300x300"}
+                {"title": f"{keyword} sample idea {i+1}", "img": "https://via.placeholder.com/300x300"} 
+                for i in range(10)
             ]
             logger.info("Created sample data for testing purposes")
         
@@ -223,6 +297,7 @@ def main():
         
         if num_files > 0:
             logger.info(f"✅ Successfully completed! Created {num_files} CSV files in output/ directory")
+            logger.info(f"📊 Total pins collected: {len(df)}")
         else:
             logger.error("Failed to save CSV files")
             sys.exit(1)
